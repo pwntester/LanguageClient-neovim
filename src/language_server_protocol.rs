@@ -25,7 +25,7 @@ impl LanguageClient {
 
     pub fn loop_call(&self, rx: &crossbeam_channel::Receiver<Call>) -> Fallible<()> {
         for call in rx.iter() {
-            let language_client = LanguageClient(self.0.clone());
+            let language_client = Self(self.0.clone());
             thread::spawn(move || {
                 if let Err(err) = language_client.handle_call(call) {
                     error!("Error handling request:\n{:?}", err);
@@ -296,7 +296,7 @@ impl LanguageClient {
                 text_document: TextDocumentIdentifier {
                     uri: filename.to_url()?,
                 },
-                position: position,
+                position,
             },
         )?;
 
@@ -1046,42 +1046,36 @@ impl LanguageClient {
 
         let response: Option<GotoDefinitionResponse> = result.clone().to_lsp()?;
 
-        match response {
-            None => {
-                self.vim()?.echowarn("Not found!")?;
-                return Ok(Value::Null);
-            }
-            Some(GotoDefinitionResponse::Scalar(loc)) => {
+        let locations = match response {
+            None => vec![],
+            Some(GotoDefinitionResponse::Scalar(loc)) => vec![loc],
+            Some(GotoDefinitionResponse::Array(arr)) => arr,
+            Some(GotoDefinitionResponse::Link(links)) => links
+                .into_iter()
+                .map(|link| Location::new(link.target_uri, link.target_selection_range))
+                .collect(),
+        };
+
+        match locations.len() {
+            0 => self.vim()?.echowarn("Not found!")?,
+            1 => {
+                let loc = locations.get(0).ok_or_else(|| err_msg("Not found!"))?;
                 self.vim()?.edit(&goto_cmd, loc.uri.filepath()?)?;
                 self.vim()?
                     .cursor(loc.range.start.line + 1, loc.range.start.character + 1)?;
+                let cur_file: String = self.vim()?.eval("expand('%')")?;
+                self.vim()?.echomsg_ellipsis(format!(
+                    "{} {}:{}",
+                    cur_file,
+                    loc.range.start.line + 1,
+                    loc.range.start.character + 1
+                ))?;
             }
-            Some(GotoDefinitionResponse::Array(arr)) => match arr.len() {
-                0 => self.vim()?.echowarn("Not found!")?,
-                1 => {
-                    let loc = arr.get(0).ok_or_else(|| err_msg("Not found!"))?;
-                    self.vim()?.edit(&goto_cmd, loc.uri.filepath()?)?;
-                    self.vim()?
-                        .cursor(loc.range.start.line + 1, loc.range.start.character + 1)?;
-                    let cur_file: String = self.vim()?.eval("expand('%')")?;
-                    self.vim()?.echomsg_ellipsis(format!(
-                        "{} {}:{}",
-                        cur_file,
-                        loc.range.start.line + 1,
-                        loc.range.start.character + 1
-                    ))?;
-                }
-                _ => {
-                    let title = format!("[LC]: search for {}", current_word);
-                    self.display_locations(&arr, &title)?
-                }
-            },
-            Some(GotoDefinitionResponse::Link(_)) => {
-                self.vim()?
-                    .echowarn("Definition links are not supported!")?;
-                return Ok(Value::Null);
+            _ => {
+                let title = format!("[LC]: search for {}", current_word);
+                self.display_locations(&locations, &title)?
             }
-        };
+        }
 
         info!("End {}", method);
         Ok(result)
@@ -2675,11 +2669,7 @@ impl LanguageClient {
             buf += "Idle";
         } else {
             // For RLS this can be "Build" or "Diagnostics" or "Indexing".
-            buf += params
-                .title
-                .as_ref()
-                .map(|title| title.as_ref())
-                .unwrap_or("Busy");
+            buf += params.title.as_ref().map(AsRef::as_ref).unwrap_or("Busy");
 
             // For RLS this is the crate name, present only if the progress isn't known.
             if let Some(message) = params.message {

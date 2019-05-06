@@ -20,7 +20,7 @@ pub struct Vim {
 
 impl Vim {
     pub fn new(rpcclient: RpcClient) -> Self {
-        Vim { rpcclient }
+        Self { rpcclient }
     }
 
     /// Fundamental functions.
@@ -211,8 +211,8 @@ impl Vim {
     pub fn set_signs(
         &self,
         filename: &str,
-        signs_to_add: &Vec<Sign>,
-        signs_to_delete: &Vec<Sign>,
+        signs_to_add: &[Sign],
+        signs_to_delete: &[Sign],
     ) -> Fallible<i8> {
         self.rpcclient.call(
             "s:set_signs",
